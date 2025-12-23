@@ -1,86 +1,61 @@
 import time
-import random
 from typing import List, Union
 
-import httpx
-import openai
-from openai import OpenAI
+import httpx  # 新增：用于处理代理
+from openai import OpenAI  # 修改：导入方式
 from cacheout import Cache
 
-# 会话缓存
 OpenAISessionCache = Cache(maxsize=100, ttl=3600, timer=time.time, default=None)
-
 
 class OpenAi:
     _api_key: str = None
     _api_url: str = None
     _model: str = "gpt-3.5-turbo"
+    _client: OpenAI = None  # 新增：保存客户端实例
 
     def __init__(self, api_key: str = None, api_url: str = None, proxy: dict = None, model: str = None,
                  compatible: bool = False):
-        """
-        初始化 OpenAI 客户端 (适配 v1.0.0+)
-        """
         self._api_key = api_key
         self._api_url = api_url
-        if model:
-            self._model = model
-
-        # 彻底隔离旧版全局配置，防止某些第三方库或 SDK 内部逻辑误触
-        if hasattr(openai, "api_key"):
-            openai.api_key = None
-
-        # 处理 Base URL
-        # v1 客户端要求 base_url 必须以 /v1 结尾（除非是兼容模式）
-        base_url = None
-        if self._api_url:
-            # 移除末尾斜杠并根据模式补全 /v1
-            stripped_url = self._api_url.rstrip("/")
-            if compatible:
-                base_url = stripped_url
-            else:
-                base_url = stripped_url if stripped_url.endswith("/v1") else f"{stripped_url}/v1"
-
-        # 处理代理
-        # OpenAI v1 不再支持 openai.proxy，必须通过 httpx 客户端注入
+        
+        # 确定 Base URL
+        base_url = self._api_url if compatible else f"{self._api_url}/v1"
+        
+        # 处理代理逻辑
         http_client = None
         if proxy and proxy.get("https"):
-            http_client = httpx.Client(proxies=proxy.get("https"))
+            http_client = httpx.Client(proxy=proxy.get("https"))
 
-        # 实例化客户端对象
-        # 注意：不再使用任何 openai.ChatCompletion 等静态方法
-        self.client = OpenAI(
+        # 修改：初始化 OpenAI 客户端
+        self._client = OpenAI(
             api_key=self._api_key,
             base_url=base_url,
             http_client=http_client
         )
 
+        if model:
+            self._model = model
+
     @staticmethod
     def __save_session(session_id: str, message: str):
-        """
-        保存会话
-        """
-        seasion = OpenAISessionCache.get(session_id)
-        if seasion:
-            seasion.append({
+        session = OpenAISessionCache.get(session_id)
+        if session:
+            session.append({
                 "role": "assistant",
                 "content": message
             })
-            OpenAISessionCache.set(session_id, seasion)
+            OpenAISessionCache.set(session_id, session)
 
     @staticmethod
     def __get_session(session_id: str, message: str) -> List[dict]:
-        """
-        获取会话
-        """
-        seasion = OpenAISessionCache.get(session_id)
-        if seasion:
-            seasion.append({
+        session = OpenAISessionCache.get(session_id)
+        if session:
+            session.append({
                 "role": "user",
                 "content": message
             })
         else:
-            seasion = [
+            session = [
                 {
                     "role": "system",
                     "content": "请在接下来的对话中请使用中文回复，并且内容尽可能详细。"
@@ -89,79 +64,56 @@ class OpenAi:
                     "role": "user",
                     "content": message
                 }]
-            OpenAISessionCache.set(session_id, seasion)
-        return seasion
+            OpenAISessionCache.set(session_id, session)
+        return session
 
     def __get_model(self, message: Union[str, List[dict]],
                     prompt: str = None,
                     user: str = "MoviePilot",
                     **kwargs):
         """
-        获取模型响应 (严格使用实例对象)
+        获取模型响应
         """
         if not isinstance(message, list):
             if prompt:
-                messages = [
+                message = [
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": message}
                 ]
             else:
-                messages = [
+                message = [
                     {"role": "user", "content": message}
                 ]
-        else:
-            messages = message
         
-        # 核心：必须通过 self.client 实例访问子模块
-        return self.client.chat.completions.create(
+        # 修改：使用新版客户端调用方式
+        return self._client.chat.completions.create(
             model=self._model,
-            messages=messages,
-            user=user,
+            messages=message,
             **kwargs
         )
 
     @staticmethod
     def __clear_session(session_id: str):
-        """
-        清除会话
-        """
         if OpenAISessionCache.get(session_id):
             OpenAISessionCache.delete(session_id)
 
-    def translate_to_zh(self, text: str, context: str = None, max_retries: int = 3):
-        """
-        翻译为中文
-        """
+    def translate_to_zh(self, text: str, context: str = None):
         system_prompt = """您是一位专业字幕翻译专家，请严格遵循以下规则：
 1. 将原文精准翻译为简体中文，保持原文本意
 2. 使用自然的口语化表达，符合中文观影习惯
 3. 结合上下文语境，人物称谓、专业术语、情感语气在上下文中保持连贯
 4. 按行翻译待译内容。翻译结果不要包括上下文。
 5. 输出内容必须仅包括译文。不要输出任何开场白，解释说明或总结"""
-        
         user_prompt = f"翻译上下文：\n{context}\n\n需要翻译的内容：\n{text}" if context else f"请翻译：\n{text}"
-        
-        last_error = ""
-        for attempt in range(max_retries + 1):
-            try:
-                # 显式使用内部封装的实例方法
-                completion = self.__get_model(
-                    prompt=system_prompt,
-                    message=user_prompt,
-                    temperature=0.2,
-                    top_p=0.9
-                )
-                # v1 响应对象通过属性访问
-                result = completion.choices[0].message.content.strip()
-                return True, result
-            except Exception as e:
-                last_error = str(e)
-                if attempt < max_retries:
-                    base_delay = 2 ** attempt
-                    jitter = random.uniform(0.1, 0.9)
-                    sleep_time = base_delay + jitter
-                    print(f"翻译请求失败 (第{attempt + 1}次尝试)：{last_error}，{sleep_time:.1f}秒后重试...")
-                    time.sleep(sleep_time)
-                else:
-                    print(f"翻译请求失败 (已重试{max_retries}次)：{last_error}")
-                    return False, f"{last_error}"
+        result = ""
+        try:
+            completion = self.__get_model(prompt=system_prompt,
+                                          message=user_prompt,
+                                          temperature=0.2,
+                                          top_p=0.9)
+            # 修改：获取结果的方式改为 .content
+            result = completion.choices[0].message.content.strip()
+            return True, result
+        except Exception as e:
+            print(f"翻译发生错误：{str(e)}")
+            return False, f"{str(e)}：{result}"
