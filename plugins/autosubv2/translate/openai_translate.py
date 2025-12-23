@@ -2,7 +2,8 @@ import time
 import random
 from typing import List, Union
 
-import openai
+import httpx
+from openai import OpenAI
 from cacheout import Cache
 
 OpenAISessionCache = Cache(maxsize=100, ttl=3600, timer=time.time, default=None)
@@ -12,17 +13,31 @@ class OpenAi:
     _api_key: str = None
     _api_url: str = None
     _model: str = "gpt-3.5-turbo"
+    client: OpenAI = None
 
     def __init__(self, api_key: str = None, api_url: str = None, proxy: dict = None, model: str = None,
                  compatible: bool = False):
         self._api_key = api_key
         self._api_url = api_url
-        openai.api_base = self._api_url if compatible else self._api_url + "/v1"
-        openai.api_key = self._api_key
-        if proxy and proxy.get("https"):
-            openai.proxy = proxy.get("https")
         if model:
             self._model = model
+
+        # 处理 Base URL
+        base_url = None
+        if self._api_url:
+            base_url = self._api_url if compatible else self._api_url.rstrip("/") + "/v1"
+
+        # 处理代理 (OpenAI v1 使用 httpx 处理请求)
+        http_client = None
+        if proxy and proxy.get("https"):
+            http_client = httpx.Client(proxies=proxy.get("https"))
+
+        # 初始化客户端
+        self.client = OpenAI(
+            api_key=self._api_key,
+            base_url=base_url,
+            http_client=http_client
+        )
 
     @staticmethod
     def __save_session(session_id: str, message: str):
@@ -71,7 +86,7 @@ class OpenAi:
                     user: str = "MoviePilot",
                     **kwargs):
         """
-        获取模型
+        获取模型响应
         """
         if not isinstance(message, list):
             if prompt:
@@ -92,10 +107,12 @@ class OpenAi:
                         "content": message
                     }
                 ]
-        return openai.ChatCompletion.create(
+        
+        # 使用 v1 版本的调用方式
+        return self.client.chat.completions.create(
             model=self._model,
-            user=user,
             messages=message,
+            user=user,
             **kwargs
         )
 
@@ -131,6 +148,7 @@ class OpenAi:
                                               message=user_prompt,
                                               temperature=0.2,
                                               top_p=0.9)
+                # v1 版本中，返回的是对象而不是字典，访问方式为 .choices[0].message.content
                 result = completion.choices[0].message.content.strip()
                 return True, result
             except Exception as e:
