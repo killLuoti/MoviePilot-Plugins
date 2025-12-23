@@ -16,6 +16,8 @@ from enum import Enum
 import queue
 import threading
 from uuid import uuid4
+import re
+
 from app.core.config import settings
 from app.core.context import MediaInfo
 from app.core.event import eventmanager, Event as MPEvent
@@ -28,8 +30,24 @@ from plugins.autosubv2.ffmpeg import Ffmpeg
 from plugins.autosubv2.translate.openai_translate import OpenAi
 
 
+# ===============================
+# 批量翻译专用 Prompt（新增）
+# ===============================
+BATCH_TRANSLATE_SYSTEM_PROMPT = """你是一名专业影视字幕翻译引擎，请严格遵守以下规则（任何情况下都不能违反）：
+
+1. 我将提供【编号的多行字幕】，你必须【逐行翻译为简体中文】
+2. 【每一行字幕都必须输出一行译文】，行数必须完全一致
+3. 【必须保留原始编号，编号格式必须完全一致，如：[1]】
+4. 只允许翻译，不允许合并、拆分、重排、遗漏任何一行
+5. 不允许添加任何说明、解释、注释、总结或额外文本
+6. 输出内容只能包含翻译后的编号行，禁止输出空行
+
+如果你无法严格满足以上规则，请按原编号输出空翻译，例如：
+[3] 
+"""
+
+
 class UserInterruptException(Exception):
-    """用户中断当前任务的异常"""
     pass
 
 
@@ -57,54 +75,23 @@ class TaskItem:
 
 
 class AutoSubv2(_PluginBase):
-    # 插件名称
     plugin_name = "AI字幕自动生成(v2)"
-    # 插件描述
     plugin_desc = "使用whisper自动生成视频文件字幕,使用大模型翻译字幕成中文。"
-    # 插件图标
     plugin_icon = "autosubtitles.jpeg"
-    # 主题色
     plugin_color = "#2C4F7E"
-    # 插件版本
-    plugin_version = "2.3"
-    # 插件作者
+    plugin_version = "2.2"
     plugin_author = "TimoYoung"
-    # 作者主页
     author_url = "https://github.com/TimoYoung"
-    # 插件配置项ID前缀
     plugin_config_prefix = "autosubv2"
-    # 加载顺序
     plugin_order = 14
-    # 可使用的用户级别
     auth_level = 2
 
-    # 私有属性
-    _tasks: Dict[str, TaskItem] = None
+    _tasks = None
     _task_queue = None
     _consumer_thread = None
     _current_processing_task = None
     _running = False
     _event = Event()
-    _enabled = None
-    _clear_history = None
-    _listen_transfer_event = None
-    _send_notify = None
-    _translate_preference = None
-    _run_now = None
-    _path_list = None
-    _file_size = None
-    _translate_zh = None
-    _openai = None
-    _enable_batch = None
-    _batch_size = None
-    _context_window = None
-    _max_retries = None
-    _enable_merge = None
-    _enable_asr = None
-    _auto_detect_language = None
-    _huggingface_proxy = None
-    _faster_whisper_model_path = None
-    _faster_whisper_model = None
 
     def init_plugin(self, config=None):
         # 如果没有配置信息， 则不处理
@@ -836,40 +823,76 @@ class AutoSubv2(_PluginBase):
     def __process_batch(self, all_subs: list, batch: list) -> list:
         """批量处理逻辑"""
         indices = [all_subs.index(item) for item in batch]
-        context = self.__get_context(all_subs, indices, is_batch=True) if self._context_window > 0 else None
-        batch_text = '\n'.join([item.content for item in batch])
+        context = (
+            self.__get_context(all_subs, indices, is_batch=True)
+            if self._context_window > 0 else None
+        )
+
+        numbered_text = "\n".join(
+            f"[{i}] {item.content}"
+            for i, item in enumerate(batch, start=1)
+        )
+
+        if context:
+            user_prompt = (
+                "以下是翻译参考上下文（仅用于理解，不需要翻译）：\n"
+                "----------------\n"
+                f"{context}\n"
+                "----------------\n\n"
+                "以下是需要翻译的字幕（必须逐行翻译并保留编号）：\n"
+                f"{numbered_text}"
+            )
+        else:
+            user_prompt = (
+                "以下是需要翻译的字幕（必须逐行翻译并保留编号）：\n"
+                f"{numbered_text}"
+            )
 
         try:
-            ret, result = self.__translate_to_zh(batch_text, context)
-            if not ret:
+            success, result = self._openai.translate_to_zh(
+                text=user_prompt,
+                context=None,
+            )
+            if not success:
                 raise Exception(result)
 
-            translated = [line.strip() for line in result.split('\n') if line.strip()]
-            if len(translated) != len(batch):
-                raise Exception(f"批次行数不匹配 {len(translated)}/{len(batch)}")
+            mapping = {}
+            for line in result.splitlines():
+                m = re.match(r"\[(\d+)]\s*(.*)", line)
+                if m:
+                    mapping[int(m.group(1))] = m.group(2)
 
-            for item, trans in zip(batch, translated):
-                item.content = f"{trans}\n{item.content}"
+            if len(mapping) != len(batch):
+                raise Exception(f"编号不完整 {len(mapping)}/{len(batch)}")
+
+            for idx, item in enumerate(batch, start=1):
+                translated = mapping.get(idx, "")
+                item.content = f"{translated}\n{item.content}"
+
             self._stats['batch_success'] += len(batch)
             return batch
+
         except Exception as e:
             logger.warning(f"批次翻译失败（{str(e)}），降级到单行匹配...")
             self._stats['batch_fail'] += 1
             return [self.__process_single(all_subs, item) for item in batch]
 
     def __process_single(self, all_subs: List[srt.Subtitle], item: srt.Subtitle) -> srt.Subtitle:
-        """单条处理逻辑"""
-        idx = all_subs.index(item)
-        context = self.__get_context(all_subs, [idx], is_batch=False) if self._context_window > 0 else None
-        success, trans = self.__translate_to_zh(item.content, context)
+        for _ in range(self._max_retries):
+            idx = all_subs.index(item)
+            context = (
+                self.__get_context(all_subs, [idx], is_batch=False)
+                if self._context_window > 0 else None
+            )
+            success, trans = self._openai.translate_to_zh(item.content, context)
+            if success:
+                item.content = f"{trans}\n{item.content}"
+                self._stats['line_fallback'] += 1
+                return item
+            time.sleep(1)
 
-        if success:
-            item.content = f"{trans}\n{item.content}"
-            self._stats['line_fallback'] += 1
-            return item
-        else:
-            item.content = f"[翻译失败]\n{item.content}"
-            return item
+        item.content = f"[翻译失败]\n{item.content}"
+        return item
 
     def __translate_zh_subtitle(self, source_lang: str, source_subtitle: str, dest_subtitle: str):
         self._stats = {'total': 0, 'batch_success': 0, 'batch_fail': 0, 'line_fallback': 0}
