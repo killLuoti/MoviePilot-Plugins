@@ -867,7 +867,7 @@ class AutoSubv2(_PluginBase):
 
             for idx, item in enumerate(batch, start=1):
                 translated = mapping.get(idx, "")
-                item.content = f"{translated}\n{item.content}"
+                item.content = translated
 
             self._stats['batch_success'] += len(batch)
             return batch
@@ -886,7 +886,7 @@ class AutoSubv2(_PluginBase):
             )
             success, trans = self._openai.translate_to_zh(item.content, context)
             if success:
-                item.content = f"{trans}\n{item.content}"
+                item.content = trans
                 self._stats['line_fallback'] += 1
                 return item
             time.sleep(1)
