@@ -79,7 +79,7 @@ class AutoSubv2(_PluginBase):
     plugin_desc = "使用whisper自动生成视频文件字幕,使用大模型翻译字幕成中文。"
     plugin_icon = "autosubtitles.jpeg"
     plugin_color = "#2C4F7E"
-    plugin_version = "2.2"
+    plugin_version = "2.4"
     plugin_author = "TimoYoung"
     author_url = "https://github.com/TimoYoung"
     plugin_config_prefix = "autosubv2"
