@@ -3,6 +3,7 @@ import random
 from typing import List, Union
 
 import httpx
+import openai
 from openai import OpenAI
 from cacheout import Cache
 
@@ -25,11 +26,20 @@ class OpenAi:
         if model:
             self._model = model
 
+        # 彻底隔离旧版全局配置，防止某些第三方库或 SDK 内部逻辑误触
+        if hasattr(openai, "api_key"):
+            openai.api_key = None
+
         # 处理 Base URL
         # v1 客户端要求 base_url 必须以 /v1 结尾（除非是兼容模式）
         base_url = None
         if self._api_url:
-            base_url = self._api_url if compatible else self._api_url.rstrip("/") + "/v1"
+            # 移除末尾斜杠并根据模式补全 /v1
+            stripped_url = self._api_url.rstrip("/")
+            if compatible:
+                base_url = stripped_url
+            else:
+                base_url = stripped_url if stripped_url.endswith("/v1") else f"{stripped_url}/v1"
 
         # 处理代理
         # OpenAI v1 不再支持 openai.proxy，必须通过 httpx 客户端注入
@@ -37,7 +47,8 @@ class OpenAi:
         if proxy and proxy.get("https"):
             http_client = httpx.Client(proxies=proxy.get("https"))
 
-        # 实例化客户端对象，避免使用全局 openai 变量
+        # 实例化客户端对象
+        # 注意：不再使用任何 openai.ChatCompletion 等静态方法
         self.client = OpenAI(
             api_key=self._api_key,
             base_url=base_url,
@@ -86,7 +97,7 @@ class OpenAi:
                     user: str = "MoviePilot",
                     **kwargs):
         """
-        获取模型响应
+        获取模型响应 (严格使用实例对象)
         """
         if not isinstance(message, list):
             if prompt:
@@ -101,7 +112,7 @@ class OpenAi:
         else:
             messages = message
         
-        # 核心修复：必须通过 self.client 调用，不能使用 openai.ChatCompletion
+        # 核心：必须通过 self.client 实例访问子模块
         return self.client.chat.completions.create(
             model=self._model,
             messages=messages,
@@ -133,7 +144,7 @@ class OpenAi:
         last_error = ""
         for attempt in range(max_retries + 1):
             try:
-                # 确保调用内部包装的新版请求方法
+                # 显式使用内部封装的实例方法
                 completion = self.__get_model(
                     prompt=system_prompt,
                     message=user_prompt,
