@@ -14,11 +14,11 @@ class Ffmpeg:
 
         # 提取指定音频流
         if audio_index:
-            command = ['ffmpeg', "-hide_banner", "-loglevel", "warning", '-y', '-i', video_path,
+            command = ['ffmpeg7', "-hide_banner", "-loglevel", "warning", '-y', '-i', video_path,
                        '-map', f'0:a:{audio_index}',
                        '-acodec', 'pcm_s16le', '-ac', '1', '-ar', '16000', audio_path]
         else:
-            command = ['ffmpeg', "-hide_banner", "-loglevel", "warning", '-y', '-i', video_path,
+            command = ['ffmpeg7', "-hide_banner", "-loglevel", "warning", '-y', '-i', video_path,
                        '-acodec', 'pcm_s16le', '-ac', '1', '-ar', '16000', audio_path]
 
         ret = subprocess.run(command).returncode
@@ -52,11 +52,11 @@ class Ffmpeg:
             return False
 
         if subtitle_index:
-            command = ['ffmpeg', "-hide_banner", "-loglevel", "warning", '-y', '-i', video_path,
+            command = ['ffmpeg7', "-hide_banner", "-loglevel", "warning", '-y', '-i', video_path,
                        '-map', f'0:s:{subtitle_index}',
                        subtitle_path]
         else:
-            command = ['ffmpeg', "-hide_banner", "-loglevel", "warning", '-y', '-i', video_path, subtitle_path]
+            command = ['ffmpeg7', "-hide_banner", "-loglevel", "warning", '-y', '-i', video_path, subtitle_path]
         ret = subprocess.run(command).returncode
         if ret == 0:
             return True
