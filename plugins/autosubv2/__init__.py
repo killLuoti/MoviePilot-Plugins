@@ -350,8 +350,8 @@ class AutoSubv2(_PluginBase):
             if self._translate_zh:
                 # 翻译字幕
                 logger.info(f"开始翻译字幕为中文 ...")
-                self.__translate_zh_subtitle(lang, gen_sub_path, f"{file_path}.zh.机翻.srt")
-                logger.info(f"翻译字幕完成：{file_name}.zh.机翻.srt")
+                self.__translate_zh_subtitle(lang, gen_sub_path, f"{file_path}.zh-CN.机翻.srt")
+                logger.info(f"翻译字幕完成：{file_name}.zh-CN.机翻.srt")
 
             end_time = time.time()
             message = f" 媒体: {file_name}\n 处理完成\n 字幕原始语言: {lang}\n "
